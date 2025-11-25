@@ -472,18 +472,36 @@ export default {
 					});
 				}
 			} else {
-				// 新增逻辑：/v1/ 路径特殊处理
+				// ================= 修复开始：通用代理请求（包括搜索） =================
+				// 1. 处理 /v1/ 和 /search 的路径
 				if (url.pathname.startsWith('/v1/')) {
 					url.hostname = 'index.docker.io';
+				} else if (url.pathname === '/search') {
+					// 关键修复：将网页搜索请求重定向到 index.docker.io 的 API 搜索
+					// 从而避免 hub.docker.com 的网页反爬虫拦截
+					url.hostname = 'index.docker.io';
+					url.pathname = '/v1/search';
 				} else if (fakePage) {
 					url.hostname = 'hub.docker.com';
 				}
+
 				if (url.searchParams.get('q')?.includes('library/') && url.searchParams.get('q') != 'library/') {
 					const search = url.searchParams.get('q');
 					url.searchParams.set('q', search.replace('library/', ''));
 				}
+				
 				const newRequest = new Request(url, request);
+				
+				// 2. 注入认证信息
+				// 如果请求是去 index.docker.io (API)，即使是 Web 访问，也带上账号密码
+				// 这样可以解决 "Rate limit exceeded" 问题
+				if (url.hostname === 'index.docker.io' && env.DOCKER_USER && env.DOCKER_PAT) {
+					const authString = btoa(`${env.DOCKER_USER}:${env.DOCKER_PAT}`);
+					newRequest.headers.set('Authorization', `Basic ${authString}`);
+				}
+				
 				return fetch(newRequest);
+				// ================= 修复结束 =================
 			}
 		}
 
@@ -508,15 +526,13 @@ export default {
 				}
 			};
 			
-			// ================== 修复核心：Token 请求注入认证信息 ==================
-			// 只有当客户端自己没有带 Authorization 头，且我们配置了账号密码时，才注入
+			// Token 请求注入认证信息
 			if (request.headers.has("Authorization")) {
 				token_parameter.headers['Authorization'] = getReqHeader("Authorization");
 			} else if (env.DOCKER_USER && env.DOCKER_PAT) {
 				const authString = btoa(`${env.DOCKER_USER}:${env.DOCKER_PAT}`);
 				token_parameter.headers['Authorization'] = `Basic ${authString}`;
 			}
-			// ================== 修复结束 ==================
 
 			let token_url = auth_url + url.pathname + url.search;
 			return fetch(new Request(token_url, request), token_parameter);
@@ -568,7 +584,7 @@ export default {
 					headers: tokenHeaders
 				});
 				
-				// 增加错误处理，如果 Auth 失败直接返回详情
+				// 增加错误处理
 				if (tokenRes.status !== 200) {
 					return new Response(await tokenRes.text(), { 
 						status: tokenRes.status, 
